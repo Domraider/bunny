@@ -2,6 +2,7 @@
 namespace Bunny\Async;
 
 use Bunny\AbstractClient;
+use Bunny\Channel;
 use Bunny\ClientStateEnum;
 use Bunny\Exception\ClientException;
 use Bunny\Protocol\HeartbeatFrame;
@@ -12,6 +13,8 @@ use React\EventLoop\Factory;
 use React\EventLoop\LoopInterface;
 use React\EventLoop\Timer\Timer;
 use React\Promise;
+use Rx\Observable;
+use Rx\ObserverInterface;
 
 /**
  * Asynchronous AMQP/RabbitMQ client. Uses ReactPHP's event loop.
@@ -99,6 +102,9 @@ class Client extends AbstractClient
         $this->flushWriteBufferPromise = null;
         $this->awaitCallbacks = [];
         $this->disconnectPromise = null;
+        if($this->heartbeatTimer instanceof Timer) {
+            $this->heartbeatTimer->cancel();
+        }
     }
 
     /**
@@ -153,8 +159,13 @@ class Client extends AbstractClient
 
         } else {
             $deferred = new Promise\Deferred();
-
-            $this->eventLoop->addWriteStream($this->getStream(), function ($stream) use ($deferred) {
+            try {
+                $stream = $this->getStream();
+            } catch (\Exception $e) {
+                //echo "Write can't have stream {$e->getMessage()}\n";
+                return $deferred->reject($e);
+            }
+            $this->eventLoop->addWriteStream($stream, function ($stream) use ($deferred) {
                 try {
                     $this->write();
 
@@ -175,51 +186,109 @@ class Client extends AbstractClient
         }
     }
 
+    public function channel()
+    {
+        for ($channelId = 1; isset($this->channels[$channelId]); ++$channelId) ;
+        $this->channels[$channelId] = new Channel($this, $channelId);
+
+        return $this->connect()
+            ->flatMap(function ($mq) use ($channelId) {
+                return \Rxnet\fromPromise($mq->channelOpen($channelId));
+            })
+            ->map(function () use ($channelId) {
+                return $this->channels[$channelId];
+            });
+
+
+    }
+
     /**
-     * Connects to AMQP server.
-     *
-     * Calling connect() multiple times will result in error.
-     *
-     * @return Promise\PromiseInterface
+     * @return Observable
      */
     public function connect()
     {
-        if ($this->state !== ClientStateEnum::NOT_CONNECTED) {
-            return Promise\reject(new ClientException("Client already connected/connecting."));
+        if ($this->state == ClientStateEnum::CONNECTED) {
+            return Observable::just($this);
         }
 
-        $this->state = ClientStateEnum::CONNECTING;
-        $this->writer->appendProtocolHeader($this->writeBuffer);
+        return Observable::create(function (ObserverInterface $observer) {
+            $this->state = ClientStateEnum::CONNECTING;
+            $this->writer->appendProtocolHeader($this->writeBuffer);
+            //echo 'try to connect';
+            try {
+                $stream = $this->getStream();
+            } catch (\Exception $e) {
+                $this->state = ClientStateEnum::ERROR;
+                $this->closeStream();
+                $this->init();
+                $observer->onError($e);
+                return;
+            }
 
-        try {
-            $this->eventLoop->addReadStream($this->getStream(), [$this, "onDataAvailable"]);
-        } catch (\Exception $e) {
-            return Promise\reject($e);
-        }
+            $this->eventLoop->addReadStream($stream, function ($stream) use ($observer) {
+                try {
+                    $this->read();
+                } catch (\Exception $e) {
+                    $this->state = ClientStateEnum::ERROR;
+                    $this->eventLoop->removeReadStream($stream);
+                    $this->closeStream();
+                    $this->init();
 
-        return $this->flushWriteBuffer()->then(function () {
-            return $this->awaitConnectionStart();
+                    $observer->onError($e);
+                    return;
+                }
 
-        })->then(function (MethodConnectionStartFrame $start) {
-            return $this->authResponse($start);
+                while (($frame = $this->reader->consumeFrame($this->readBuffer)) !== null) {
+                    foreach ($this->awaitCallbacks as $k => $callback) {
+                        if ($callback($frame) === true) {
+                            unset($this->awaitCallbacks[$k]);
+                            continue 2; // CONTINUE WHILE LOOP
+                        }
+                    }
 
-        })->then(function () {
-            return $this->awaitConnectionTune();
+                    if ($frame->channel === 0) {
+                        $this->onFrameReceived($frame);
 
-        })->then(function (MethodConnectionTuneFrame $tune) {
-            $this->frameMax = $tune->frameMax;
-            return $this->connectionTuneOk($tune->channelMax, $tune->frameMax, $this->options["heartbeat"]);
+                    } else {
+                        if (!isset($this->channels[$frame->channel])) {
+                            throw new ClientException(
+                                "Received frame #{$frame->type} on closed channel #{$frame->channel}."
+                            );
+                        }
 
-        })->then(function () {
-            return $this->connectionOpen($this->options["vhost"]);
+                        $this->channels[$frame->channel]->onFrameReceived($frame);
+                    }
+                }
+            });
 
-        })->then(function () {
-            $this->heartbeatTimer = $this->eventLoop->addTimer($this->options["heartbeat"], [$this, "onHeartbeat"]);
+            $this->flushWriteBuffer()->then(function () {
+                return $this->awaitConnectionStart();
 
-            $this->state = ClientStateEnum::CONNECTED;
-            return $this;
+            })->then(function (MethodConnectionStartFrame $start) {
+                return $this->authResponse($start);
 
+            })->then(function () {
+                return $this->awaitConnectionTune();
+
+            })->then(function (MethodConnectionTuneFrame $tune) {
+                $this->frameMax = $tune->frameMax;
+                return $this->connectionTuneOk($tune->channelMax, $tune->frameMax, $this->options["heartbeat"]);
+
+            })->then(function () {
+                return $this->connectionOpen($this->options["vhost"]);
+
+            })->then(function () {
+                $this->heartbeatTimer = $this->eventLoop->addTimer($this->options["heartbeat"], [$this, "onHeartbeat"]);
+
+                $this->state = ClientStateEnum::CONNECTED;
+                return $this;
+
+            })->then(function ($client) use ($observer) {
+                $observer->onNext($client);
+            });
         });
+
+
     }
 
     /**
@@ -272,6 +341,64 @@ class Client extends AbstractClient
     }
 
     /**
+     * Creates stream according to options passed in constructor.
+     *
+     * @return resource
+     */
+    protected function getStream()
+    {
+        if ($this->stream === null) {
+            // TODO: SSL
+            // see https://github.com/nrk/predis/blob/v1.0/src/Connection/StreamConnection.php
+            $uri = "tcp://{$this->options["host"]}:{$this->options["port"]}";
+            $flags = STREAM_CLIENT_CONNECT;
+
+            if (isset($this->options["async_connect"]) && !!$this->options["async_connect"]) {
+                $flags |= STREAM_CLIENT_ASYNC_CONNECT;
+            }
+
+            if (isset($this->options["persistent"]) && !!$this->options["persistent"]) {
+                $flags |= STREAM_CLIENT_PERSISTENT;
+
+                if (!isset($this->options["path"])) {
+                    throw new ClientException("If you need persistent connection, you have to specify 'path' option.");
+                }
+
+                $uri .= (strpos($this->options["path"], "/") === 0) ? $this->options["path"] : "/" . $this->options["path"];
+            }
+
+            $this->stream = stream_socket_client($uri, $errno, $errstr, (float)$this->options["timeout"], $flags);
+
+            if (!$this->stream) {
+                throw new ClientException(
+                    "Could not connect to {$this->options["host"]}:{$this->options["port"]}: {$errstr}.",
+                    $errno
+                );
+            }
+
+            if (isset($this->options["read_write_timeout"])) {
+                $readWriteTimeout = (float)$this->options["read_write_timeout"];
+                if ($readWriteTimeout < 0) {
+                    $readWriteTimeout = -1;
+                }
+                $readWriteTimeoutSeconds = floor($readWriteTimeout);
+                $readWriteTimeoutMicroseconds = ($readWriteTimeout - $readWriteTimeoutSeconds) * 10e6;
+                stream_set_timeout($this->stream, $readWriteTimeoutSeconds, $readWriteTimeoutMicroseconds);
+            }
+
+            if (isset($this->options["tcp_nodelay"]) && function_exists("socket_import_stream")) {
+                $socket = socket_import_stream($this->stream);
+                socket_set_option($socket, SOL_TCP, TCP_NODELAY, (int)$this->options["tcp_nodelay"]);
+            }
+
+            if ($this->options["async"]) {
+                stream_set_blocking($this->stream, 0);
+            }
+        }
+        return $this->stream;
+    }
+
+    /**
      * Adds callback to process incoming frames.
      *
      * Callback is passed instance of {@link \Bunny\Protocol|AbstractFrame}. If callback returns TRUE, frame is said to
@@ -321,6 +448,10 @@ class Client extends AbstractClient
     {
         $now = microtime(true);
         $nextHeartbeat = ($this->lastWrite ?: $now) + $this->options["heartbeat"];
+        if($this->getState() != ClientStateEnum::CONNECTED) {
+            $this->heartbeatTimer = $this->eventLoop->addTimer($this->options["heartbeat"], [$this, "onHeartbeat"]);
+            return;
+        }
 
         if ($now >= $nextHeartbeat) {
             $this->writer->appendFrame(new HeartbeatFrame(), $this->writeBuffer);
