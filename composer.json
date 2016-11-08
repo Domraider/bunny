@@ -1,5 +1,5 @@
 {
-    "name": "rx/bunny",
+    "name": "domraider/bunny",
     "type": "library",
     "description": "Performant pure-PHP AMQP (RabbitMQ) sync/async (ReactPHP) library",
     "keywords": [
