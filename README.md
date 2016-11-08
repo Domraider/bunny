@@ -1,9 +1,55 @@
 # BunnyPHP
 
-[![Build Status](https://travis-ci.org/jakubkulhan/bunny.svg?branch=master)](https://travis-ci.org/jakubkulhan/bunny)
-[![Downloads this Month](https://img.shields.io/packagist/dm/bunny/bunny.svg)](https://packagist.org/packages/bunny/bunny)
-[![Latest stable](https://img.shields.io/packagist/v/bunny/bunny.svg)](https://packagist.org/packages/bunny/bunny)
+Fork to handle automatic reconnect : 
 
+```php
+$loop = \EventLoop\EventLoop::getLoop();
+$mq = new \Bunny\Async\Client($loop, [
+ 'host' => '127.0.0.1', 
+ 'port' => 5672,
+ 'user' => 'guest',
+ 'password' => 'guest',
+ 'heartbeat' => 6,
+ 'timeout'=>2.0
+]);
+
+$mq->connect()
+ ->doOnError(function(\Exception $e) {
+     echo "Disconnected, retry in 2s {$e->getMessage()}\n";
+ })
+ ->retryWhen(function($errors) {
+     return $errors->delay(2000);
+ })
+ ->subscribeCallback(function () {
+     echo "connected";
+ }, function () {
+     echo "error";
+ }, null, new \Rx\Scheduler\EventLoopScheduler($loop));
+
+Rx\Observable::interval(4000)
+ ->flatMap(function() use($mq) {
+     return $mq->channel();
+ })
+ ->flatMap(function (\Bunny\Channel $channel) use ($mq) {
+     echo "produce message\n";
+     return \Rxnet\fromPromise($channel->publish('test', [], 'amq.direct', 'test'));
+ })
+ ->retryWhen(function($errors) {
+     return $errors->delay(2000);
+ })
+ ->subscribeCallback(
+     function () {
+         echo "  OK\n";
+     },
+     function (\Exception $e) {
+         echo "  {$e->getMessage()}\n";
+         $trace = $e->getTrace();
+         var_dump($trace[0]);
+     }, null,
+     new \Rx\Scheduler\EventLoopScheduler($loop)
+ );
+
+```
 
 > Performant pure-PHP AMQP (RabbitMQ) sync/async (ReactPHP) library
 
@@ -134,67 +180,3 @@ $channel->consume(
 $bunny->run(12); // Client runs for 12 seconds and then stops
 ```
 
-### Pop a single message from a queue
-
-```php
-$message = $channel->get('queue_name');
-
-// Handle message
-
-$channel->ack($message); // Acknowledge message
-```
-
-### Prefetch count
-
-A way to control how many messages are prefetched by BunnyPHP when consuming a queue is by using the channel's QOS method. In the example below only 5 messages will be prefetched. Combined with acknowledging messages this turns into an effective flow control for your applications, especially asynchronous applications. No new messages will be fetched unless one has been acknowledged.
-
-```php
-$channel->qos(
-    0, // Prefetch size
-    5  // Prefetch count
-);
-```
-
-### Asynchronous usage
-
-Bunny supports both synchronous and asynchronous usage utilizing [ReactPHP](https://github.com/reactphp). The following example shows setting up a client and consuming a queue indefinitely.
-
-```php
-(new Async\Client($connection)->connect()->then(function (Client $client) {
-   return $client->channel();
-})->then(function (Channel $channel) {
-   return $channel->qos(0, 5)->then(function () use ($channel) {
-       return $channel;
-   });
-})->then(function (Channel $channel) use ($event) {
-   $channel->consume(
-       function (Message $message, Channel $channel, Client $client) use ($event) {
-           // Handle message
-
-           $channel->ack($message);
-       },
-       'queue_name'
-   );
-});
-```
-
-## Contributing
-
-* Large part of the PHP code (almost everything in `Bunny\Protocol` namespace) is generated from spec in file
-  [`spec/amqp-rabbitmq-0.9.1.json`](spec/amqp-rabbitmq-0.9.1.json). Look for `DO NOT EDIT!` in doc comments.
-
-  To change generated files change [`spec/generate.php`](spec/generate.php) and run:
-
-  ```sh
-  $ php ./spec/generate.php
-  ```
-
-## Broker compatibility
-
-Works well with RabbitMQ
-
-Does not work with ActiveMQ because it requires AMQP 1.0 which is a completely different protocol (Bunny is implementing AMQP 0.9.1)
-
-## License
-
-BunnyPHP is licensed under MIT license. See `LICENSE` file.
