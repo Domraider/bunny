@@ -28,7 +28,7 @@ $mq->connect()
 
 // Publish every 1s
 \Rx\Observable::interval(1000)
-    // <- here packets are dropped on disconnect
+    // <- here we drop during disconnect disconnect
     // <- add a buffer ? include it on produce ?
     ->flatMap(function () use ($mq) {
         // Publish must depends on channel opening success
