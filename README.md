@@ -16,7 +16,7 @@ $mq = new \Bunny\Async\Client($loop, [
 // Connect is refactored to be retryable
 $mq->connect()
     ->retryWhen(function ($errors) {
-        // Retry connect on error
+        // Retry to connect on error
         return $errors->delay(2000)
             ->doOnNext(function () {
                 echo "Disconnected, retry\n";
