@@ -20,7 +20,7 @@ use Rx\ObserverInterface;
  * Asynchronous AMQP/RabbitMQ client. Uses ReactPHP's event loop.
  *
  * The client's API follows AMQP class/method naming convention and uses PHP's idiomatic camelCase method naming
- * convention - e.g. "queue.declare" has corresponding method "queueDeclare", "exchange.delete" -> "exchangeDelete".
+ * convention - e.g. "queue.declare" has corresponding method "queueDeclare", "exchange.delete" -> "exchangeDelete".
  * Methods from "basic" class are not prefixed with "basic" - e.g. "basic.publish" is just "publish".
  *
  * Usage:
@@ -214,7 +214,6 @@ class Client extends AbstractClient
         return Observable::create(function (ObserverInterface $observer) {
             $this->state = ClientStateEnum::CONNECTING;
             $this->writer->appendProtocolHeader($this->writeBuffer);
-            //echo 'try to connect';
             try {
                 $stream = $this->getStream();
             } catch (\Exception $e) {
@@ -449,6 +448,8 @@ class Client extends AbstractClient
         $now = microtime(true);
         $nextHeartbeat = ($this->lastWrite ?: $now) + $this->options["heartbeat"];
         if($this->getState() != ClientStateEnum::CONNECTED) {
+
+            //echo "Client aint connected ignore heartbeat \n";
             $this->heartbeatTimer = $this->eventLoop->addTimer($this->options["heartbeat"], [$this, "onHeartbeat"]);
             return;
         }
