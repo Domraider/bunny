@@ -12,6 +12,8 @@ $mq = new \Bunny\Async\Client($loop, [
  'heartbeat' => 6,
  'timeout'=>2.0
 ]);
+
+// Connect is refactor to be retryable
 $mq->connect()
     ->retryWhen(function ($errors) {
         // Retry connect on error
@@ -28,6 +30,7 @@ $mq->connect()
 \Rx\Observable::interval(1000)
     ->flatMap(function () use ($mq) {
         // Publish must depends on channel opening success
+        // Refactored to check connect before
         return $mq->channel();
     })
     ->flatMap(function (\Bunny\Channel $channel) use ($mq) {
