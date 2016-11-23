@@ -11,8 +11,6 @@ $mq = new \Bunny\Async\Client($loop, [
     'port' => 5672,
     'user' => 'guest',
     'password' => 'guest',
-    //'heartbeat' => 6,
-    //'timeout'=>2.0
 ]);
 
 // Connect is refactored to be retryable
@@ -25,13 +23,15 @@ $mq->connect()
             });
     })
     ->flatMap(function () use ($mq) {
+        // Open only 1 channel
         return $mq->channel();
     })
     ->subscribeCallback(function (\Bunny\Channel $channel) use ($mq, $loop) {
         echo "connected\n";
+        // Publish every 2s
         \Rx\Observable::interval(2000)
-            // <- here we drop during disconnect disconnect
-            // <- add a buffer ? include it on produce ?
+            // <- here we drop during disconnect
+            // <- You have to add a buffer
             ->flatMap(function () use ($mq, $channel) {
                 $data = md5(microtime(true));
                 echo "Produce {$data}\n";
@@ -54,7 +54,7 @@ $mq->connect()
         echo "disconnected : {$e->getMessage()}\n";
     }, null, new \Rx\Scheduler\EventLoopScheduler($loop));
 
-// Publish every 1s
+
 $loop->run();
 ```
 
