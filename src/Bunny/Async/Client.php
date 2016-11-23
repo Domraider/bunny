@@ -48,7 +48,7 @@ class Client extends AbstractClient
 {
 
     /** @var LoopInterface */
-    protected $eventLoop;
+    public $eventLoop;
 
     /** @var Promise\PromiseInterface */
     protected $flushWriteBufferPromise;
@@ -102,7 +102,7 @@ class Client extends AbstractClient
         $this->flushWriteBufferPromise = null;
         $this->awaitCallbacks = [];
         $this->disconnectPromise = null;
-        if($this->heartbeatTimer instanceof Timer) {
+        if ($this->heartbeatTimer instanceof Timer) {
             $this->heartbeatTimer->cancel();
         }
     }
@@ -192,8 +192,8 @@ class Client extends AbstractClient
         $this->channels[$channelId] = new Channel($this, $channelId);
 
         return $this->connect()
-            ->flatMap(function ($mq) use ($channelId) {
-                return \Rxnet\fromPromise($mq->channelOpen($channelId));
+            ->flatMap(function (Client $mq) use ($channelId) {
+                return \Rx\React\Promise::toObservable($mq->channelOpen($channelId));
             })
             ->map(function () use ($channelId) {
                 return $this->channels[$channelId];
@@ -214,17 +214,18 @@ class Client extends AbstractClient
         return Observable::create(function (ObserverInterface $observer) {
             $this->state = ClientStateEnum::CONNECTING;
             $this->writer->appendProtocolHeader($this->writeBuffer);
-            //echo 'try to connect';
+            echo 'try to connect.';
             try {
+                echo "get stream";
                 $stream = $this->getStream();
             } catch (\Exception $e) {
+                echo "can't connect.";
                 $this->state = ClientStateEnum::ERROR;
                 $this->closeStream();
                 $this->init();
                 $observer->onError($e);
                 return;
             }
-
             $this->eventLoop->addReadStream($stream, function ($stream) use ($observer) {
                 try {
                     $this->read();
@@ -284,6 +285,10 @@ class Client extends AbstractClient
                 return $this;
 
             })->then(function ($client) use ($observer) {
+                foreach ($this->channels as $channelId => $channel) {
+                    /* @var Channel $channel */
+                    $this->channelOpen($channelId);
+                }
                 $observer->onNext($client);
             });
         });
@@ -367,7 +372,7 @@ class Client extends AbstractClient
                 $uri .= (strpos($this->options["path"], "/") === 0) ? $this->options["path"] : "/" . $this->options["path"];
             }
 
-            $this->stream = stream_socket_client($uri, $errno, $errstr, (float)$this->options["timeout"], $flags);
+            $this->stream = @stream_socket_client($uri, $errno, $errstr, (float)$this->options["timeout"], $flags);
 
             if (!$this->stream) {
                 throw new ClientException(
@@ -448,7 +453,7 @@ class Client extends AbstractClient
     {
         $now = microtime(true);
         $nextHeartbeat = ($this->lastWrite ?: $now) + $this->options["heartbeat"];
-        if($this->getState() != ClientStateEnum::CONNECTED) {
+        if ($this->getState() != ClientStateEnum::CONNECTED) {
             $this->heartbeatTimer = $this->eventLoop->addTimer($this->options["heartbeat"], [$this, "onHeartbeat"]);
             return;
         }

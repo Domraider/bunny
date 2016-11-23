@@ -1,6 +1,7 @@
 <?php
 namespace Bunny;
 
+use Bunny\Async\Client;
 use Bunny\Exception\ChannelException;
 use Bunny\Protocol\AbstractFrame;
 use Bunny\Protocol\Buffer;
@@ -17,6 +18,7 @@ use Bunny\Protocol\MethodBasicReturnFrame;
 use Bunny\Protocol\MethodChannelCloseOkFrame;
 use Bunny\Protocol\MethodFrame;
 use React\Promise\Deferred;
+use React\Promise\Promise;
 use React\Promise\PromiseInterface;
 
 /**
@@ -115,6 +117,24 @@ class Channel
      */
     public function getClient()
     {
+        if(!$this->client instanceof Client) {
+            return $this->client;
+        }
+        while(!$this->client->getState() == ClientStateEnum::CONNECTED) {
+            $this->client->eventLoop->tick();
+        }
+        $ok = false;
+        $observable = $this->client->connect();
+        $observable->subscribeCallback(function() use(&$ok) {
+            $ok = true;
+        }, function() use(&$ok) {
+            echo "got an error";
+            $ok = true;
+        });
+        while(!$ok) {
+            $this->client->eventLoop->tick();
+        }
+        echo 'got client';
         return $this->client;
     }
 
