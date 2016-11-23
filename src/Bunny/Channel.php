@@ -128,13 +128,11 @@ class Channel
         $observable->subscribeCallback(function() use(&$ok) {
             $ok = true;
         }, function() use(&$ok) {
-            echo "got an error";
             $ok = true;
         });
         while(!$ok) {
             $this->client->eventLoop->tick();
         }
-        echo 'got client';
         return $this->client;
     }
 
