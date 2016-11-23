@@ -214,12 +214,12 @@ class Client extends AbstractClient
         return Observable::create(function (ObserverInterface $observer) {
             $this->state = ClientStateEnum::CONNECTING;
             $this->writer->appendProtocolHeader($this->writeBuffer);
-            echo 'try to connect.';
+            //echo 'try to connect.';
             try {
-                echo "get stream";
+                //echo "get stream";
                 $stream = $this->getStream();
             } catch (\Exception $e) {
-                echo "can't connect.";
+                //echo "can't connect.";
                 $this->state = ClientStateEnum::ERROR;
                 $this->closeStream();
                 $this->init();
