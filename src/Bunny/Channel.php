@@ -1,7 +1,7 @@
 <?php
 namespace Bunny;
 
-use Bunny\Async\Client;
+use Bunny\Async\Client as AsyncClient;
 use Bunny\Exception\ChannelException;
 use Bunny\Protocol\AbstractFrame;
 use Bunny\Protocol\Buffer;
@@ -18,7 +18,6 @@ use Bunny\Protocol\MethodBasicReturnFrame;
 use Bunny\Protocol\MethodChannelCloseOkFrame;
 use Bunny\Protocol\MethodFrame;
 use React\Promise\Deferred;
-use React\Promise\Promise;
 use React\Promise\PromiseInterface;
 
 /**
@@ -117,7 +116,7 @@ class Channel
      */
     public function getClient()
     {
-        if(!$this->client instanceof Client) {
+        if(!$this->client instanceof AsyncClient) {
             return $this->client;
         }
         while(!$this->client->getState() == ClientStateEnum::CONNECTED) {
